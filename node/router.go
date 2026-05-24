@@ -52,6 +52,32 @@ func (r *Router) StartWatching(ctx context.Context, endpoints []string) error {
 	}
 	r.mu.Unlock()
 	slog.Info("Loaded initial routes", "count", len(resp.Kvs))
+	// 2. Start the Watcher in a background goroutine
+	go func() {
+		watchChan := cli.Watch(ctx, string(RoutePrefix), clientv3.WithPrefix())
+
+		for watchResp := range watchChan {
+			for _, event := range watchResp.Events {
+				key := string(event.Kv.Key)
+
+				r.mu.Lock()
+				switch event.Type {
+				case clientv3.EventTypePut:
+					// A route was added or updated
+					var route Route
+					if err := json.Unmarshal(event.Kv.Value, &route); err == nil {
+						r.routes[key] = route
+						slog.Info("Route updated: %s -> %s", key, route.destination)
+					}
+				case clientv3.EventTypeDelete:
+					// A route was deleted
+					delete(r.routes, key)
+					slog.Info("Route deleted: %s", key)
+				}
+				r.mu.Unlock()
+			}
+		}
+	}()
 	return nil
 }
 func NewRouter(configDb *clientv3.Client) *Router {
